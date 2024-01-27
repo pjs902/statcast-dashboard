@@ -1,6 +1,6 @@
 # statcast-dashboard
 
-Small dashoard for looking at some batted ball metrics derived from statcast data.
+Small dashboard for looking at some batted ball metrics derived from statcast data.
 
 ## Usage
 
