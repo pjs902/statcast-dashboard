@@ -18,7 +18,7 @@ import pandas as pd
 
 import os
 
-os.environ["PYBASEBALL_CACHE"] = "/home/peter/projects/statcast_dashboard/.cache/pybaseball"
+os.environ["PYBASEBALL_CACHE"] = "/home/peter/projects/statcast-dashboard/.cache/pybaseball"
 
 import pybaseball as pyb
 
