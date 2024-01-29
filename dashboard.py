@@ -29,55 +29,100 @@ import streamlit as st
 from astropy.stats import knuth_bin_width
 
 
-# functions to extract median and 90th percentile launch speed for a player
-def get_median_launch_speed(bbes, playerid):
-    return np.nanmedian(bbes[bbes.batter == playerid].launch_speed)
+# functions to extract median and 90th percentile launch speed for all players
+def get_median_launch_speeds(bbes):
+    # avoid looping over all players, pandas groupby is much faster
+    return bbes["launch_speed"].groupby(bbes["batter_name"]).apply(np.nanmedian, include_groups=False)
 
 
-def get_90th_launch_speed(bbes, playerid):
-    return np.nanpercentile(bbes[bbes.batter == playerid].launch_speed, 90)
+def get_90th_launch_speeds(bbes):
+    return (
+        bbes["launch_speed"].groupby(bbes["batter_name"]).apply(lambda x: np.nanpercentile(x, 90), include_groups=False)
+    )
 
 
-def get_median_launch_angle(bbes, playerid):
-    return np.nanmedian(bbes[bbes.batter == playerid].launch_angle)
+def get_median_launch_angles(bbes):
+    return bbes["launch_angle"].groupby(bbes["batter_name"]).apply(np.nanmedian, include_groups=False)
 
 
-def get_optimal_pct(bbes, playerid):
-    # percentage of batted balls in the optimal range
-    hitter = bbes[bbes.batter == playerid]
-    optimal = hitter[(hitter.launch_angle >= 15) & (hitter.launch_angle <= 40)]
-    return len(optimal) / len(hitter) * 100
+def get_optimal_pcts(bbes):
+    # percentage of batted balls in the optimal range, per player
+
+    # first, group by player
+    by_player = bbes.groupby("batter_name")
+
+    # next, compute the number of batted balls in the optimal range
+    optimal = by_player.apply(lambda x: len(x[(x.launch_angle >= 15) & (x.launch_angle <= 40)]), include_groups=False)
+
+    # compute the total number of batted balls
+    total = by_player.apply(lambda x: len(x), include_groups=False)
+
+    # compute the percentage
+    return optimal / total * 100
 
 
-def get_hardhit_pct(bbes, playerid):
-    # percentage of batted balls in the optimal range
-    hitter = bbes[bbes.batter == playerid]
-    hard = hitter[(hitter.launch_speed >= 95)]
-    return len(hard) / len(hitter) * 100
+def get_hardhit_pcts(bbes):
+    # percentage of batted balls hit >= 95 mph, per player
+
+    # first, group by player
+    by_player = bbes.groupby("batter_name")
+
+    # next, compute the number of batted balls hit >= 95 mph
+    hardhit = by_player.apply(lambda x: len(x[x.launch_speed >= 95]), include_groups=False)
+
+    # compute the total number of batted balls
+    total = by_player.apply(lambda x: len(x), include_groups=False)
+
+    # compute the percentage
+    return hardhit / total * 100
+
+
+def get_barrel_pcts(bbes):
+    # percentage of batted balls hit >= 95 mph, in the optimal range, per player
+
+    # first, group by player
+    by_player = bbes.groupby("batter_name")
+
+    # next, compute the number of batted balls hit >= 95 mph, in the optimal range
+    barrel = by_player.apply(
+        lambda x: len(x[(x.launch_speed >= 95) & (x.launch_angle >= 15) & (x.launch_angle <= 40)]), include_groups=False
+    )
+
+    # compute the total number of batted balls
+    total = by_player.apply(lambda x: len(x), include_groups=False)
+
+    # compute the percentage
+    return barrel / total * 100
 
 
 @st.cache_data
 def get_data():
     bbes = pd.read_parquet("./bbes.parquet")
-    hitters = bbes.batter.unique()
 
-    median_launch_speeds = {hitter: get_median_launch_speed(bbes, hitter) for hitter in hitters}
-    _90th_launch_speeds = {hitter: get_90th_launch_speed(bbes, hitter) for hitter in hitters}
-    median_launch_angles = {hitter: get_median_launch_angle(bbes, hitter) for hitter in hitters}
-    optimal_angles = {hitter: get_optimal_pct(bbes, hitter) for hitter in hitters}
-    hard_hit_pct = {hitter: get_hardhit_pct(bbes, hitter) for hitter in hitters}
+    # drop any players with fewer than 50 batted balls
+    bbes = bbes.groupby("batter_name").filter(lambda x: len(x) >= 50)
 
-    hitter_names = {hitter: bbes[bbes.batter == hitter].batter_name.iloc[0] for hitter in hitters}
+    # sort by batter_name
+    bbes = bbes.sort_values("batter_name")
+
+    median_launch_speeds = get_median_launch_speeds(bbes).to_numpy()
+    _90th_launch_speeds = get_90th_launch_speeds(bbes).to_numpy()
+    median_launch_angles = get_median_launch_angles(bbes).to_numpy()
+    optimal_angles = get_optimal_pcts(bbes).to_numpy()
+    hard_hit_pcts = get_hardhit_pcts(bbes).to_numpy()
+    barrel_pcts = get_barrel_pcts(bbes).to_numpy()
 
     # create a dataframe of these values, with player name as index
     league_values = pd.DataFrame(
         {
-            "hitter_name": hitter_names,
+            "hitter_name": bbes["batter_name"].unique(),
             "median_launch_speed": median_launch_speeds,
             "90th_launch_speed": _90th_launch_speeds,
             "median_launch_angle": median_launch_angles,
             "optimal_pct": optimal_angles,
-            "hard_hit_pct": hard_hit_pct,
+            "hard_hit_pct": hard_hit_pcts,
+            "barrel_pct": barrel_pcts,
+            "BBEs": bbes["batter_name"].value_counts().to_numpy(),
         }
     )
     return bbes, league_values
@@ -93,7 +138,14 @@ def main():
     option = st.sidebar.radio("Select an option", ["Individual Player", "Leaderboard"])
 
     # Load data
+
+    # time how long it takes to load data
+    from time import time
+
+    start = time()
     bbes, league_values = get_data()
+    end = time()
+    st.write(f"Data loaded in {end - start:.2f} seconds")
 
     if option == "Individual Player":
         # add a selectbox, over all players
@@ -112,24 +164,31 @@ def main():
         league_median = np.nanmedian(league_values["median_launch_speed"])
         league_90th = np.nanmedian(league_values["90th_launch_speed"])
         league_hard_hit_pct = np.nanmedian(league_values["hard_hit_pct"])
+        league_barrel_pct = np.nanmedian(league_values["barrel_pct"])
 
         # player values
         player_median = np.nanmedian(hitter["launch_speed"])
         player_90th = np.nanpercentile(hitter["launch_speed"], 90)
         player_hard_hit_pct = len(hitter[hitter.launch_speed >= 95]) / len(hitter) * 100
+        player_barrel_pct = (
+            len(hitter[(hitter.launch_speed >= 95) & (hitter.launch_angle >= 15) & (hitter.launch_angle <= 40)])
+            / len(hitter)
+            * 100
+        )
 
         # compute percentiles
         median_percentile = sp.stats.percentileofscore(league_values["median_launch_speed"], player_median)
         _90th_percentile = sp.stats.percentileofscore(league_values["90th_launch_speed"], player_90th)
         hardhit_percentile = sp.stats.percentileofscore(league_values["hard_hit_pct"], player_hard_hit_pct)
+        barrel_percentile = sp.stats.percentileofscore(league_values["barrel_pct"], player_barrel_pct)
 
         # create a dataframe
         summary_stats = pd.DataFrame(
             {
-                "Stat": ["Median", "90th", "Hard Hit %"],
-                "Player": [player_median, player_90th, player_hard_hit_pct],
-                "League": [league_median, league_90th, league_hard_hit_pct],
-                "Percentile": [median_percentile, _90th_percentile, hardhit_percentile],
+                "Stat": ["Median", "90th", "Hard Hit %", "Barrel %"],
+                "Player": [player_median, player_90th, player_hard_hit_pct, player_barrel_pct],
+                "League": [league_median, league_90th, league_hard_hit_pct, league_barrel_pct],
+                "Percentile": [median_percentile, _90th_percentile, hardhit_percentile, barrel_percentile],
             }
         )
         summary_stats["Percentile"] = summary_stats["Percentile"].apply(lambda x: f"{x:.1f}")
@@ -213,17 +272,15 @@ def main():
         st.header("League Leaderboard")
 
         # add filters for min bbes
-        min_bbes = st.slider("Minimum BBEs", 0, 400, 100)
+        min_bbes = st.slider("Minimum BBEs", 50, 400, 100)
 
-        # filter the league values based on min bbes, using bbes table
-        league_values = league_values[
-            league_values.index.isin(bbes.batter.value_counts()[bbes.batter.value_counts() > min_bbes].index)
-        ]
+        # filter the league values
+        filtered_league_values = league_values[league_values["BBEs"] >= min_bbes]
 
-        # set index to player name
-        league_values = league_values.set_index("hitter_name")
-
-        st.dataframe(league_values.sort_values("median_launch_speed", ascending=False))
+        # display the leaderboard
+        st.dataframe(
+            filtered_league_values.sort_values("median_launch_speed", ascending=False).set_index("hitter_name")
+        )
 
 
 if __name__ == "__main__":
